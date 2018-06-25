@@ -2,6 +2,7 @@ from __future__ import division
 from __future__ import print_function
 import random
 
+from socket import gethostname
 import tensorflow as tf
 import os
 from dataset_utils import _dataset_exists, _get_filenames_and_classes, write_label_file, _convert_dataset, _write_dataset
@@ -103,30 +104,34 @@ def main():
             outfile = o
             #print("rank %d len files = %d, outfile = %s\n" % (comm.rank, len(rank_files), outfile))
 
-    print("rank: %d, outfile = %s\n" % (comm.rank, outfile))
+    print("rank: %d, %s, outfile = %s" % (comm.rank, gethostname(), outfile))
 
     # write training files
-    _write_dataset(rank_files, outfile, class_names_to_ids)
+    if outfile != None:
+    	_write_dataset(rank_files, outfile, class_names_to_ids)
 
     val_file_mappings = comm.bcast(val_file_mappings, root=0)
     rank_files = []
     outfile = None
     for rank,o,file in val_file_mappings:
+	#if comm.rank == 29:
+	    #print("rank %d, shards = %d, comm rank = %d, mod = %d" % (rank, FLAGS.num_shards, comm.rank, rank % FLAGS.num_shards))
         if rank % FLAGS.num_shards == comm.rank:
             rank_files.append(file)
             outfile = o
             #print("rannk: %d, file = %s" % (
         #pprint("rank: %s, %d, %s, %s" % (comm.rank, a,b,c))
 
-    print("val rank: %d, outfile = %s\n" % (comm.rank, outfile))
+    print("val rank: %d, %s, outfile = %s" % (comm.rank, gethostname(), outfile))
     # write validation files
-    _write_dataset(rank_files, outfile, class_names_to_ids)
+    if outfile != None:
+    	_write_dataset(rank_files, outfile, class_names_to_ids)
 
     # Finally, write the labels file:
     labels_to_class_names = dict(zip(range(len(class_names)), class_names))
     write_label_file(labels_to_class_names, FLAGS.dataset_dir)
 
-    print('\nFinished converting the %s dataset!' % (FLAGS.tfrecord_filename))
+    print('Finished converting the %s dataset for %s rank %d' % (FLAGS.tfrecord_filename, gethostname(), comm.rank))
 
 if __name__ == "__main__":
     main()

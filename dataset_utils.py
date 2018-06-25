@@ -2,12 +2,21 @@ import math
 import os
 import sys
 import tensorflow as tf
+import numpy as np
+from PIL import Image
 
 slim = tf.contrib.slim
 
 #State the labels filename
 LABELS_FILENAME = 'labels.txt'
 #===================================================  Dataset Utils  ===================================================
+
+def _int64_feature(value):
+  return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+
+def _bytes_feature(value):
+  return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
 
 def int64_feature(values):
   """Returns a TF-Feature of int64s.
@@ -159,7 +168,31 @@ def _get_dataset_filename(dataset_dir, split_name, shard_id, tfrecord_filename, 
       tfrecord_filename, split_name, shard_id, _NUM_SHARDS)
   return os.path.join(dataset_dir, output_filename)
 
-def _write_dataset(files, output_filename, class_names_to_ids):
+def write_tfrecords(label, image_files, tfrecord_file):
+    writer = tf.python_io.TFRecordWriter(tfrecord_file)
+    for file in image_files:
+        print(file)
+        shape, binary_image = get_image_binary(file)
+        # write label, shape, and image content to the TFRecord file
+        example = tf.train.Example(features=tf.train.Features(feature={
+                'label': _int64_feature(label),
+                'shape': _bytes_feature(shape),
+                'image': _bytes_feature(binary_image)
+                }))
+        writer.write(example.SerializeToString())
+    writer.close()
+
+def get_image_binary(filename):
+    """ You can read in the image using tensorflow too, but it's a drag
+        since you have to create graphs. It's much easier using Pillow and NumPy
+    """
+    image = Image.open(filename)
+    image = np.asarray(image, np.uint8)
+    shape = np.array(image.shape, np.int32)
+    return shape.tobytes(), image.tobytes() # convert image to raw data bytes in the array.
+
+
+def _write_dataset(files, output_filename, class_names_to_ids, sess):
   """Converts the given filenames to a TFRecord dataset.
 
   Args:
@@ -169,9 +202,30 @@ def _write_dataset(files, output_filename, class_names_to_ids):
       (integers).
     dataset_dir: The directory where the converted datasets are stored.
   """
-  with tf.Graph().as_default():
-    image_reader = ImageReader()
+  image_reader = ImageReader()
+  images = []
+  result = {}
+  for file in files:
+    # Read the filename:
+    image_data = tf.gfile.FastGFile(file, 'r').read()
+    height, width = image_reader.read_image_dims(sess, image_data)
 
+    class_name = os.path.basename(os.path.dirname(file))
+    class_id = class_names_to_ids[class_name]
+
+    example = image_to_tfexample(image_data, 'jpg', height, width, class_id)
+    images.append(example.SerializeToString())
+  result = {"outfile": output_filename, "images": images}
+  return result
+
+  """
+  with tf.Graph().as_default():
+
+    #config = tf.ConfigProto(device_count={'CPU': 1})
+    config = tf.ConfigProto()
+    config.intra_op_parallelism_threads = 4
+    config.inter_op_parallelism_threads = 2
+    sess = tf.Session(config=config)
     with tf.Session('') as sess:
       with tf.python_io.TFRecordWriter(output_filename) as tfrecord_writer:
         for file in files:
@@ -187,6 +241,7 @@ def _write_dataset(files, output_filename, class_names_to_ids):
               image_data, 'jpg', height, width, class_id)
 
           tfrecord_writer.write(example.SerializeToString())
+  """
   
 
 def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfrecord_filename, _NUM_SHARDS):
@@ -200,7 +255,7 @@ def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfr
     dataset_dir: The directory where the converted datasets are stored.
   """
   assert split_name in ['train', 'validation']
-  file_mappings = []
+  file_mappings = {}
 
   node_index = 0
   num_per_shard = int(math.ceil(len(filenames) / float(_NUM_SHARDS)))
@@ -215,9 +270,20 @@ def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfr
           #i+1, len(filenames), shard_id))
       #sys.stdout.flush()
       if split_name == 'validation':
-          file_mappings.append( (shard_id + _NUM_SHARDS, output_filename, filenames[i]) )
+          index = shard_id + _NUM_SHARDS
+          if index in file_mappings:
+              file_mappings[index]["files"].append(filenames[i])
+          else:
+              file_mappings[index] = {"outfile": output_filename, "files": [filenames[i]]}
+
+          #file_mappings.append( (shard_id + _NUM_SHARDS, output_filename, filenames[i]) )
       else:
-          file_mappings.append( (shard_id, output_filename, filenames[i]) )
+          if shard_id in file_mappings:
+              file_mappings[shard_id]["files"].append(filenames[i])
+          else:
+              file_mappings[shard_id] = {"outfile": output_filename, "files": [filenames[i]]}
+
+          #file_mappings.append( (shard_id, output_filename, filenames[i]) )
 
       # Read the filename:
       #sys.stdout.write(' >> file: %s\n' % (filenames[i]))
