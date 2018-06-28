@@ -126,6 +126,22 @@ class ImageReader(object):
     assert image.shape[2] == 3
     return image
 
+"""
+def get_cloud_filenames_and_classes(dataset_dir):
+    class_names = []
+    photo_filenames = []
+    for folder, subfolders, files in tf.gfile.Walk(dataset_dir):
+        print(folder, subfolders, files)
+        if files:
+            for file in files:
+                print(file)
+                st = tf.gfile.Stat("%s%s" % (folder, file))
+                #print folder, file, st.length 
+                dir = os.path.dirname("%s%s" % (folder, file))
+                class_names.append(os.path.split(dir)[1])
+                photo_filenames.append(("%s%s" % (folder, file), st.length))
+    return photo_filenames, sorted(class_names)
+"""
 
 def _get_filenames_and_classes(dataset_dir):
   """Returns a list of filenames and inferred class names.
@@ -155,10 +171,11 @@ def _get_filenames_and_classes(dataset_dir):
       class_names.append(filename)
 
   photo_filenames = []
+  total_file_size = 0
   for directory in directories:
     for filename in os.listdir(directory):
       path = os.path.join(directory, filename)
-      photo_filenames.append(path)
+      photo_filenames.append((path, os.path.getsize(path)))
 
   return photo_filenames, sorted(class_names)
 
@@ -182,17 +199,8 @@ def write_tfrecords(label, image_files, tfrecord_file):
         writer.write(example.SerializeToString())
     writer.close()
 
-def get_image_binary(filename):
-    """ You can read in the image using tensorflow too, but it's a drag
-        since you have to create graphs. It's much easier using Pillow and NumPy
-    """
-    image = Image.open(filename)
-    image = np.asarray(image, np.uint8)
-    shape = np.array(image.shape, np.int32)
-    return shape.tobytes(), image.tobytes() # convert image to raw data bytes in the array.
 
-
-def _write_dataset(files, output_filename, class_names_to_ids, sess):
+def _write_dataset(files, output_filename, class_names_to_ids):
   """Converts the given filenames to a TFRecord dataset.
 
   Args:
@@ -202,7 +210,7 @@ def _write_dataset(files, output_filename, class_names_to_ids, sess):
       (integers).
     dataset_dir: The directory where the converted datasets are stored.
   """
-  image_reader = ImageReader()
+
   images = []
   result = {}
   for file in files:
@@ -221,12 +229,13 @@ def _write_dataset(files, output_filename, class_names_to_ids, sess):
   """
   with tf.Graph().as_default():
 
+    image_reader = ImageReader()
     #config = tf.ConfigProto(device_count={'CPU': 1})
     config = tf.ConfigProto()
-    config.intra_op_parallelism_threads = 4
-    config.inter_op_parallelism_threads = 2
-    sess = tf.Session(config=config)
-    with tf.Session('') as sess:
+    config.intra_op_parallelism_threads = 16
+    config.inter_op_parallelism_threads = 8
+    #sess = tf.Session(config=config)
+    with tf.Session(config=config) as sess:
       with tf.python_io.TFRecordWriter(output_filename) as tfrecord_writer:
         for file in files:
           # Read the filename:
@@ -241,7 +250,7 @@ def _write_dataset(files, output_filename, class_names_to_ids, sess):
               image_data, 'jpg', height, width, class_id)
 
           tfrecord_writer.write(example.SerializeToString())
-  """
+  
   
 
 def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfrecord_filename, _NUM_SHARDS):
@@ -258,6 +267,11 @@ def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfr
   file_mappings = {}
 
   node_index = 0
+  total_filesize = 0
+  for filename, filesize in filenames:
+    total_filesize += filesize
+  avg_size_per_shard = total_filesize / float(_NUM_SHARDS)
+  print("avg size per shard = %f" % (avg_size_per_shard))
   num_per_shard = int(math.ceil(len(filenames) / float(_NUM_SHARDS)))
   for shard_id in range(_NUM_SHARDS):
     output_filename = _get_dataset_filename(
@@ -265,27 +279,29 @@ def _convert_dataset(split_name, filenames, class_names_to_ids, dataset_dir, tfr
 
     start_ndx = shard_id * num_per_shard
     end_ndx = min((shard_id+1) * num_per_shard, len(filenames))
-    for i in range(start_ndx, end_ndx):
+    shard_total_file_size = 0
+    #for i in range(start_ndx, end_ndx):
+    for i in range(len(filenames)):
       #sys.stdout.write('\r>> Converting image %d/%d shard %d' % (
           #i+1, len(filenames), shard_id))
       #sys.stdout.flush()
       if split_name == 'validation':
           index = shard_id + _NUM_SHARDS
+
           if index in file_mappings:
-              file_mappings[index]["files"].append(filenames[i])
+              file_mappings[index]["files"].append(filenames[i][0])
           else:
-              file_mappings[index] = {"outfile": output_filename, "files": [filenames[i]]}
+              file_mappings[index] = {"outfile": output_filename, "files": [filenames[i][0]]}
 
           #file_mappings.append( (shard_id + _NUM_SHARDS, output_filename, filenames[i]) )
       else:
           if shard_id in file_mappings:
-              file_mappings[shard_id]["files"].append(filenames[i])
+              file_mappings[shard_id]["files"].append(filenames[i][0])
           else:
-              file_mappings[shard_id] = {"outfile": output_filename, "files": [filenames[i]]}
+              file_mappings[shard_id] = {"outfile": output_filename, "files": [filenames[i][0]]}
 
-          #file_mappings.append( (shard_id, output_filename, filenames[i]) )
-
-      # Read the filename:
+      shard_total_file_size += filenames[i][1]
+      if shard_total_file_size > avg_size_per_shard:
       #sys.stdout.write(' >> file: %s\n' % (filenames[i]))
 
   """

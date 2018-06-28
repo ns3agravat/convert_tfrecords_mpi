@@ -5,7 +5,9 @@ import random
 from socket import gethostname
 import tensorflow as tf
 import os
-from dataset_utils import _dataset_exists, _get_filenames_and_classes, write_label_file, _convert_dataset, _write_dataset, write_tfrecords
+from dataset_utils import _dataset_exists, _get_filenames_and_classes, write_label_file, _convert_dataset, _write_dataset, write_tfrecords 
+
+#from dataset_utils import get_cloud_filenames_and_classes
 
 import numpy as np
 from mpi4py import MPI                                                                                                                                                            
@@ -80,11 +82,11 @@ def main():
         all_dat = master()
                     
     else:
-        config = tf.ConfigProto()
-        config.intra_op_parallelism_threads = 8
-        config.inter_op_parallelism_threads = 4
-        worker_sess = tf.Session(config=config)
-        worker(class_names_to_ids, worker_sess)
+        #config = tf.ConfigProto()
+        #config.intra_op_parallelism_threads = 8
+        #config.inter_op_parallelism_threads = 4
+        #worker_sess = tf.Session(config=config)
+        worker(class_names_to_ids)
 
 
 class Work():
@@ -100,9 +102,17 @@ class Work():
  
 def master():
 
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = '/home/agravat/key.json'
     #Get a list of photo_filenames like ['123.jpg', '456.jpg'...] and a list of sorted class names from parsing the subdirectories.
     photo_filenames, class_names = _get_filenames_and_classes(FLAGS.dataset_dir)
+    """
+    cloud_filenames, cloud_class_names = get_cloud_filenames_and_classes("gs://agravat-demo/images")
+    
+    for f in cloud_filenames:
+        print(f)
+    """
 
+    
     #Refer each of the class name to a specific integer number for predictions later
     class_names_to_ids = dict(zip(class_names, range(len(class_names))))
 
@@ -187,19 +197,20 @@ def master():
     return all_data
         
     
-def worker(class_names_to_ids, sess):
+def worker(class_names_to_ids):
     comm = MPI.COMM_WORLD
     status = MPI.Status()
     while 1:
         data = comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
         if status.Get_tag(): break
         print("%d %s %s %s" % (comm.rank, gethostname(), data["outfile"], len(data["files"])))
-        result = _write_dataset(data["files"], data["outfile"], class_names_to_ids, sess )
+        result = _write_dataset(data["files"], data["outfile"], class_names_to_ids)
+        """
         with tf.python_io.TFRecordWriter(result["outfile"]) as tfrecord_writer:
-            #print(result["outfile"])
             for example in result["images"]:
                 # Read the filename:
                 tfrecord_writer.write(example)
+        """
         #write_tfrecords(1, data["files"], data["outfile"])
         # send the filename to the master
         comm.send(obj=None, dest=0)
